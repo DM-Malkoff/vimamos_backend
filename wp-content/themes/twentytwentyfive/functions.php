@@ -156,3 +156,72 @@ if ( ! function_exists( 'twentytwentyfive_format_binding' ) ) :
 		}
 	}
 endif;
+
+add_action('rest_api_init', function() {
+    register_rest_route('custom/v1', '/category-attributes/(?P<id>\d+)', [
+        'methods'  => 'GET',
+        'callback' => 'get_category_attributes',
+    ]);
+});
+
+/** Получение атрибутов товаров категории */
+function get_category_attributes($request) {
+    $category_id = $request['id'];
+    
+    // Get category term
+    $term = get_term($category_id, 'product_cat');
+    if (!$term || is_wp_error($term)) {
+        return [];
+    }
+
+    // Get products using WP_Query
+    $args = array(
+        'post_type' => 'product',
+        'posts_per_page' => -1,
+        'tax_query' => array(
+            array(
+                'taxonomy' => 'product_cat',
+                'field' => 'term_id',
+                'terms' => $category_id
+            )
+        )
+    );
+    
+    $query = new WP_Query($args);
+    $products = $query->posts;
+
+    $attributes = [];
+    foreach ($products as $product_post) {
+        $product = wc_get_product($product_post->ID);
+        if (!$product) continue;
+
+        foreach ($product->get_attributes() as $attr) {
+            $attr_id = $attr->is_taxonomy() ? sanitize_title($attr->get_name()) : $attr->get_id();
+            
+            // Get options with their names
+            $options = [];
+            if ($attr->is_taxonomy()) {
+                $terms = $attr->get_terms();
+                if (!is_wp_error($terms)) {
+                    foreach ($terms as $term) {
+                        $options[] = $term->name;
+                    }
+                }
+            } else {
+                $options = $attr->get_options();
+            }
+
+            $attributes[$attr_id] = [
+                'id'      => $attr->get_id(),
+                'name'    => $attr->get_name(),
+                'title'   => wc_attribute_label($attr->get_name()),
+                'options' => array_unique(array_merge(
+                    $attributes[$attr_id]['options'] ?? [],
+                    $options
+                ))
+            ];
+        }
+    }
+
+    return array_values($attributes);
+}
