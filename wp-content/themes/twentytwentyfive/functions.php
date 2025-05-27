@@ -348,11 +348,131 @@ function handle_product_search_request(WP_REST_Request $request) {
             $product_id = get_the_ID();
             $product = wc_get_product($product_id);
 
+            // Получаем все изображения товара
+            $attachment_ids = $product->get_gallery_image_ids();
+            $images = array();
+            // Добавляем основное изображение
+            if ($product->get_image_id()) {
+                $images[] = array(
+                    'id' => $product->get_image_id(),
+                    'src' => wp_get_attachment_url($product->get_image_id()),
+                    'name' => get_the_title($product->get_image_id()),
+                    'alt' => get_post_meta($product->get_image_id(), '_wp_attachment_image_alt', true),
+                );
+            }
+            // Добавляем галерею изображений
+            foreach ($attachment_ids as $attachment_id) {
+                $images[] = array(
+                    'id' => $attachment_id,
+                    'src' => wp_get_attachment_url($attachment_id),
+                    'name' => get_the_title($attachment_id),
+                    'alt' => get_post_meta($attachment_id, '_wp_attachment_image_alt', true),
+                );
+            }
+
+            // Получаем все атрибуты товара
+            $attributes_data = array();
+            foreach ($product->get_attributes() as $attribute) {
+                $attribute_data = array(
+                    'id' => $attribute->get_id(),
+                    'name' => $attribute->get_name(),
+                    'position' => $attribute->get_position(),
+                    'visible' => $attribute->get_visible(),
+                    'variation' => $attribute->get_variation(),
+                    'options' => array(),
+                );
+
+                // Получаем значения атрибута
+                if ($attribute->is_taxonomy()) {
+                    $terms = $attribute->get_terms();
+                    if (!is_wp_error($terms)) {
+                        foreach ($terms as $term) {
+                            $attribute_data['options'][] = array(
+                                'id' => $term->term_id,
+                                'name' => $term->name,
+                                'slug' => $term->slug,
+                            );
+                        }
+                    }
+                } else {
+                    foreach ($attribute->get_options() as $option) {
+                        $attribute_data['options'][] = array(
+                            'name' => $option,
+                            'slug' => sanitize_title($option),
+                        );
+                    }
+                }
+
+                $attributes_data[] = $attribute_data;
+            }
+
+            // Формируем полную информацию о товаре
             $products[] = array(
-                'id'    => $product_id,
-                'title' => get_the_title(),
+                'id' => $product_id,
+                'name' => $product->get_name(),
+                'slug' => $product->get_slug(),
+                'permalink' => get_permalink($product_id),
+                'date_created' => $product->get_date_created()->format('c'),
+                'date_modified' => $product->get_date_modified()->format('c'),
+                'type' => $product->get_type(),
+                'status' => $product->get_status(),
+                'featured' => $product->get_featured(),
+                'catalog_visibility' => $product->get_catalog_visibility(),
+                'description' => $product->get_description(),
+                'short_description' => $product->get_short_description(),
+                'sku' => $product->get_sku(),
                 'price' => $product->get_price(),
-                'link'  => get_permalink(),
+                'regular_price' => $product->get_regular_price(),
+                'sale_price' => $product->get_sale_price(),
+                'date_on_sale_from' => $product->get_date_on_sale_from() ? $product->get_date_on_sale_from()->format('c') : null,
+                'date_on_sale_to' => $product->get_date_on_sale_to() ? $product->get_date_on_sale_to()->format('c') : null,
+                'total_sales' => $product->get_total_sales(),
+                'virtual' => $product->get_virtual(),
+                'downloadable' => $product->get_downloadable(),
+                'downloads' => $product->get_downloads(),
+                'download_limit' => $product->get_download_limit(),
+                'download_expiry' => $product->get_download_expiry(),
+                'tax_status' => $product->get_tax_status(),
+                'tax_class' => $product->get_tax_class(),
+                'manage_stock' => $product->get_manage_stock(),
+                'stock_quantity' => $product->get_stock_quantity(),
+                'stock_status' => $product->get_stock_status(),
+                'backorders' => $product->get_backorders(),
+                'backorders_allowed' => $product->get_backorders() !== 'no',
+                'backordered' => $product->is_on_backorder(),
+                'sold_individually' => $product->get_sold_individually(),
+                'weight' => $product->get_weight(),
+                'dimensions' => array(
+                    'length' => $product->get_length(),
+                    'width' => $product->get_width(),
+                    'height' => $product->get_height(),
+                ),
+                'shipping_required' => $product->needs_shipping(),
+                'shipping_taxable' => $product->is_shipping_taxable(),
+                'shipping_class' => $product->get_shipping_class(),
+                'shipping_class_id' => $product->get_shipping_class_id(),
+                'reviews_allowed' => $product->get_reviews_allowed(),
+                'average_rating' => $product->get_average_rating(),
+                'rating_count' => $product->get_rating_count(),
+                'categories' => array_map(function($term) {
+                    return array(
+                        'id' => $term->term_id,
+                        'name' => $term->name,
+                        'slug' => $term->slug,
+                    );
+                }, wp_get_post_terms($product_id, 'product_cat')),
+                'tags' => array_map(function($term) {
+                    return array(
+                        'id' => $term->term_id,
+                        'name' => $term->name,
+                        'slug' => $term->slug,
+                    );
+                }, wp_get_post_terms($product_id, 'product_tag')),
+                'images' => $images,
+                'attributes' => $attributes_data,
+                'variations' => $product->is_type('variable') ? $product->get_children() : array(),
+                'menu_order' => $product->get_menu_order(),
+                'meta_data' => $product->get_meta_data(),
             );
         }
         wp_reset_postdata();
