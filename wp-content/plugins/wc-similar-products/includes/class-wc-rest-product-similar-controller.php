@@ -48,8 +48,16 @@ class WC_REST_Product_Similar_Controller {
                             'sale_price' => array(
                                 'type' => 'string',
                             ),
-                            'image' => array(
-                                'type' => 'string',
+                            'images' => array(
+                                'type' => 'array',
+                                'items' => array(
+                                    'type' => 'object',
+                                    'properties' => array(
+                                        'src' => array(
+                                            'type' => 'string'
+                                        )
+                                    )
+                                ),
                             ),
                             'similarity_score' => array(
                                 'type' => 'number',
@@ -93,7 +101,7 @@ class WC_REST_Product_Similar_Controller {
                 'price' => $product_data->get_price(),
                 'regular_price' => $product_data->get_regular_price(),
                 'sale_price' => $product_data->get_sale_price(),
-                'image' => wp_get_attachment_url($product_data->get_image_id()),
+                'images' => $similar['images'],
                 'similarity_score' => $similar['similarity_score']
             );
         }
@@ -129,7 +137,7 @@ class WC_REST_Product_Similar_Controller {
                         'price' => $product_data->get_price(),
                         'regular_price' => $product_data->get_regular_price(),
                         'sale_price' => $product_data->get_sale_price(),
-                        'image' => wp_get_attachment_url($product_data->get_image_id()),
+                        'images' => $similar['images'],
                         'similarity_score' => $similar['similarity_score']
                     );
                 }

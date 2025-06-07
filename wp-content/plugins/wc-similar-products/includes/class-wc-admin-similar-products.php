@@ -2,190 +2,176 @@
 
 class WC_Admin_Similar_Products {
     
-    private $batch_size = 1; // Обрабатываем по одному товару за раз
-    
     public function __construct() {
-        // Добавляем меню только если WooCommerce активен
-        if ($this->is_woocommerce_active()) {
-            add_action('admin_menu', array($this, 'add_admin_menu'), 99);
-            add_action('admin_enqueue_scripts', array($this, 'enqueue_admin_scripts'));
-            add_action('wp_ajax_recalculate_similarities_batch', array($this, 'ajax_recalculate_similarities_batch'));
-        }
-    }
-    
-    private function is_woocommerce_active() {
-        return class_exists('WooCommerce');
-    }
-    
-    public function enqueue_admin_scripts($hook) {
-        if ('woocommerce_page_wc-similar-products' !== $hook) {
-            return;
-        }
-        
-        wp_enqueue_script(
-            'wc-similar-products-admin',
-            plugins_url('/assets/js/admin.js', dirname(__FILE__)),
-            array('jquery'),
-            '1.0.1',
-            true
-        );
-        
-        wp_localize_script('wc-similar-products-admin', 'wcSimilarProducts', array(
-            'ajax_url' => admin_url('admin-ajax.php'),
-            'nonce' => wp_create_nonce('wc_similar_products_nonce'),
-            'processing_text' => __('Processing... %s%% complete', 'wc-similar-products'),
-            'success_text' => __('Recalculation completed successfully!', 'wc-similar-products'),
-            'error_text' => __('An error occurred. Please check error log for details.', 'wc-similar-products')
-        ));
-    }
-    
-    public function ajax_recalculate_similarities_batch() {
-        try {
-            check_ajax_referer('wc_similar_products_nonce', 'nonce');
-            
-            if (!current_user_can('manage_woocommerce')) {
-                throw new Exception('Insufficient permissions');
-            }
-            
-            // Увеличиваем лимит времени выполнения и памяти
-            @set_time_limit(300);
-            @ini_set('memory_limit', '512M');
-            
-            global $wpdb;
-            
-            $batch = isset($_POST['batch']) ? intval($_POST['batch']) : 0;
-            
-            // В первом пакете очищаем таблицу
-            if ($batch === 0) {
-                $table_name = $wpdb->prefix . 'product_similarities';
-                $wpdb->query("TRUNCATE TABLE {$table_name}");
-                error_log('Similar products table truncated');
-            }
-            
-            // Получаем общее количество товаров
-            $total_products = $wpdb->get_var("
-                SELECT COUNT(ID) 
-                FROM {$wpdb->posts} 
-                WHERE post_type = 'product' 
-                AND post_status = 'publish'
-            ");
-            
-            if ($total_products === null) {
-                throw new Exception('Failed to get total products count');
-            }
-            
-            // Получаем текущий товар
-            $product = $wpdb->get_row($wpdb->prepare("
-                SELECT ID, post_title 
-                FROM {$wpdb->posts} 
-                WHERE post_type = 'product' 
-                AND post_status = 'publish'
-                ORDER BY ID ASC
-                LIMIT %d, 1
-            ", $batch));
-            
-            if ($product) {
-                error_log(sprintf('Processing product ID: %d (batch %d)', $product->ID, $batch));
-                
-                try {
-                    // Обрабатываем товар
-                    WC_Product_Similarity::get_instance()->update_product_similarities($product->ID);
-                    
-                    // Получаем дополнительную информацию о товаре
-                    $wc_product = wc_get_product($product->ID);
-                    $product_info = array(
-                        'id' => $product->ID,
-                        'title' => $product->post_title,
-                        'edit_link' => get_edit_post_link($product->ID, 'raw'),
-                        'view_link' => $wc_product ? $wc_product->get_permalink() : '',
-                        'thumbnail' => $wc_product ? get_the_post_thumbnail_url($product->ID, 'thumbnail') : '',
-                        'sku' => $wc_product ? $wc_product->get_sku() : '',
-                        'price' => $wc_product ? $wc_product->get_price() : ''
-                    );
-                    
-                    // Очищаем кэш
-                    wp_cache_flush();
-                    if (function_exists('wc_cache_helper')) {
-                        wc_cache_helper()->get_transient_version('product', true);
-                    }
-                    
-                    $processed = $batch + 1;
-                    $percentage = min(round(($processed / $total_products) * 100), 100);
-                    
-                    error_log(sprintf('Completed processing product ID: %d. Progress: %d%%', $product->ID, $percentage));
-                    
-                    wp_send_json_success(array(
-                        'processed' => $processed,
-                        'total' => $total_products,
-                        'percentage' => $percentage,
-                        'complete' => $processed >= $total_products,
-                        'product' => $product_info
-                    ));
-                } catch (Exception $e) {
-                    error_log(sprintf('Error processing product ID %d: %s', $product->ID, $e->getMessage()));
-                    throw $e;
-                }
-            } else {
-                error_log('No more products to process');
-                wp_send_json_success(array(
-                    'complete' => true,
-                    'percentage' => 100
-                ));
-            }
-            
-        } catch (Exception $e) {
-            error_log('Error in recalculate_similarities_batch: ' . $e->getMessage());
-            error_log('Stack trace: ' . $e->getTraceAsString());
-            wp_send_json_error($e->getMessage());
-        }
+        add_action('admin_menu', array($this, 'add_admin_menu'));
+        add_action('admin_init', array($this, 'handle_recalculate'));
     }
     
     public function add_admin_menu() {
-        if (!current_user_can('manage_woocommerce')) {
-            return;
+        global $submenu;
+        
+        // Проверяем, нет ли уже пункта меню "Похожие товары"
+        if (isset($submenu['woocommerce'])) {
+            foreach ($submenu['woocommerce'] as $item) {
+                if ($item[0] === 'Похожие товары') {
+                    return; // Выходим, если пункт меню уже существует
+                }
+            }
         }
         
         add_submenu_page(
             'woocommerce',
-            __('Similar Products', 'wc-similar-products'),
-            __('Similar Products', 'wc-similar-products'),
+            'Похожие товары',
+            'Похожие товары',
             'manage_woocommerce',
             'wc-similar-products',
             array($this, 'render_admin_page')
         );
     }
     
-    public function render_admin_page() {
-        if (!current_user_can('manage_woocommerce')) {
-            wp_die(__('You do not have sufficient permissions to access this page.', 'wc-similar-products'));
+    public function handle_recalculate() {
+        if (
+            isset($_POST['wc_recalculate_similarities']) &&
+            isset($_POST['_wpnonce']) &&
+            wp_verify_nonce($_POST['_wpnonce'], 'wc_recalculate_similarities')
+        ) {
+            try {
+                error_log("Starting similarity recalculation");
+                
+                // Увеличиваем лимит времени выполнения
+                if (!ini_get('safe_mode')) {
+                    set_time_limit(600); // 10 минут
+                }
+                
+                // Увеличиваем лимит памяти
+                if (function_exists('wp_raise_memory_limit')) {
+                    wp_raise_memory_limit('admin');
+                }
+                
+                $similarity = WC_Product_Similarity::get_instance();
+                if (!$similarity) {
+                    throw new Exception("Failed to initialize WC_Product_Similarity");
+                }
+                
+                $result = $similarity->recalculate_all_similarities();
+                
+                if ($result === true) {
+                    WC_Admin_Notices::add_notice(
+                        'Похожие товары были успешно пересчитаны.',
+                        'success'
+                    );
+                }
+                
+            } catch (Exception $e) {
+                error_log("Error during similarity recalculation: " . $e->getMessage());
+                error_log("Stack trace: " . $e->getTraceAsString());
+                
+                WC_Admin_Notices::add_notice(
+                    'Произошла ошибка при пересчете похожих товаров: ' . esc_html($e->getMessage()),
+                    'error'
+                );
+            }
         }
+    }
+    
+    public function render_admin_page() {
+        global $wpdb;
         
-        // Показываем сообщения об ошибках/успехе
-        settings_errors('wc_similar_products');
+        // Получаем статистику
+        $table_name = $wpdb->prefix . 'product_similarities';
+        $total_products = $wpdb->get_var("SELECT COUNT(DISTINCT product_id) FROM {$table_name}");
+        $total_relations = $wpdb->get_var("SELECT COUNT(*) FROM {$table_name}");
+        $avg_similar = $total_products ? round($total_relations / $total_products, 1) : 0;
+        
+        // Получаем последние обновленные товары
+        $recent_products = $wpdb->get_results("
+            SELECT DISTINCT p.ID, p.post_title, 
+                   (SELECT COUNT(*) FROM {$table_name} WHERE product_id = p.ID) as similar_count
+            FROM {$wpdb->posts} p
+            JOIN {$table_name} ps ON p.ID = ps.product_id
+            WHERE p.post_type = 'product'
+            GROUP BY p.ID
+            ORDER BY p.ID DESC
+            LIMIT 10
+        ");
+        
         ?>
         <div class="wrap">
-            <h1><?php echo esc_html__('Similar Products', 'wc-similar-products'); ?></h1>
+            <h1>Похожие товары</h1>
             
-            <div class="card">
-                <h2><?php _e('Recalculate Similar Products', 'wc-similar-products'); ?></h2>
-                <p><?php _e('Click the button below to recalculate similar products for all products in your store.', 'wc-similar-products'); ?></p>
-                <p><?php _e('This process may take some time depending on the number of products in your store.', 'wc-similar-products'); ?></p>
-                <p><?php _e('The process will run in the background and can be safely interrupted if needed.', 'wc-similar-products'); ?></p>
+            <div style="margin: 20px 0; padding: 20px; background: #fff; border: 1px solid #ccd0d4; box-shadow: 0 1px 1px rgba(0,0,0,.04);">
+                <h2>Статистика</h2>
+                <table class="wp-list-table widefat fixed striped" style="width: auto; min-width: 500px;">
+                    <tr>
+                        <td><strong>Всего товаров с похожими:</strong></td>
+                        <td align="right"><?php echo number_format($total_products, 0, ',', ' '); ?></td>
+                    </tr>
+                    <tr>
+                        <td><strong>Всего связей между товарами:</strong></td>
+                        <td align="right"><?php echo number_format($total_relations, 0, ',', ' '); ?></td>
+                    </tr>
+                    <tr>
+                        <td><strong>Среднее количество похожих на товар:</strong></td>
+                        <td align="right"><?php echo $avg_similar; ?></td>
+                    </tr>
+                </table>
                 
-                <div class="progress-wrapper" style="display: none;">
-                    <div class="progress-bar" style="background-color: #f0f0f1; height: 20px; border: 1px solid #ccc; margin: 10px 0;">
-                        <div class="progress" style="background-color: #2271b1; width: 0; height: 100%; transition: width 0.3s;"></div>
-                    </div>
-                    <p class="progress-status"></p>
-                </div>
-                
-                <p>
-                    <button type="button" id="recalculate-similarities" class="button button-primary">
-                        <?php _e('Recalculate Similar Products', 'wc-similar-products'); ?>
-                    </button>
-                </p>
+                <?php if (!empty($recent_products)): ?>
+                    <h3 style="margin-top: 20px;">Последние обработанные товары</h3>
+                    <table class="wp-list-table widefat fixed striped" style="margin-top: 10px;">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Название товара</th>
+                                <th style="text-align: center;">Количество похожих</th>
+                                <th>Действия</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($recent_products as $product): ?>
+                                <tr>
+                                    <td><?php echo esc_html($product->ID); ?></td>
+                                    <td><?php echo esc_html($product->post_title); ?></td>
+                                    <td align="center"><?php echo esc_html($product->similar_count); ?></td>
+                                    <td>
+                                        <a href="<?php echo get_edit_post_link($product->ID); ?>" target="_blank">
+                                            Редактировать
+                                        </a>
+                                        &nbsp;|&nbsp;
+                                        <a href="<?php echo get_permalink($product->ID); ?>" target="_blank">
+                                            Просмотреть
+                                        </a>
+                                    </td>
+                                </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                <?php endif; ?>
+            </div>
+            
+            <div style="margin: 20px 0; padding: 20px; background: #fff; border: 1px solid #ccd0d4; box-shadow: 0 1px 1px rgba(0,0,0,.04);">
+                <h2>Пересчет похожих товаров</h2>
+                <form method="post">
+                    <?php wp_nonce_field('wc_recalculate_similarities'); ?>
+                    <p>Нажмите кнопку ниже, чтобы пересчитать похожие товары для всех товаров в вашем магазине.</p>
+                    <p>Новый алгоритм будет:</p>
+                    <ul style="list-style-type: disc; margin-left: 2em;">
+                        <li>Находить до 12 похожих товаров для каждого товара</li>
+                        <li>Сначала искать товары из той же категории</li>
+                        <li>Если товаров недостаточно, искать в родительских категориях</li>
+                        <li>Если все еще недостаточно, добавлять случайные товары из каталога</li>
+                    </ul>
+                    <p>
+                        <button type="submit" name="wc_recalculate_similarities" class="button button-primary">
+                            Пересчитать похожие товары
+                        </button>
+                    </p>
+                </form>
             </div>
         </div>
         <?php
     }
-} 
+}
+
+// Инициализация
+new WC_Admin_Similar_Products(); 
