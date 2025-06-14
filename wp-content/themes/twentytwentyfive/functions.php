@@ -480,3 +480,28 @@ function handle_product_search_request(WP_REST_Request $request) {
 
     return new WP_REST_Response($products, 200);
 }
+
+// Добавляем ACF поля в WooCommerce REST API для категорий
+add_filter('woocommerce_rest_prepare_product_cat', function($response, $item, $request) {
+    if (!function_exists('get_field')) {
+        return $response;
+    }
+
+    // Получаем ID термина
+    $term_id = $item->term_id;
+    
+    // Получаем все поля ACF для этой категории
+    $fields = get_fields('product_cat_' . $term_id);
+    
+    if (!empty($fields)) {
+        $response->data['acf'] = $fields;
+        error_log('Added ACF fields for category ' . $term_id . ': ' . print_r($fields, true));
+    }
+
+    return $response;
+}, 10, 3);
+
+// Добавляем поддержку REST API для ACF
+add_filter('acf/settings/rest_api_format', function() {
+    return 'standard';
+});
